@@ -1,0 +1,16 @@
+h=120
+w = 100
+
+clusterRoot=\\komodo\SharedData\Fintan\
+localRoot=W:\Fintan\
+
+dirSourceBitmaps=Data\motion1_resized\
+dirPCAModel=Data\motion1PCAb\
+dirCode=Code\
+models=1
+
+referenceFrames=4
+
+frames=1300
+
+PCs=50

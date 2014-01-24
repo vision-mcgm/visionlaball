@@ -1,0 +1,592 @@
+
+<!DOCTYPE html
+  PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<html><head>
+      <meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+   <!--
+This HTML was auto-generated from MATLAB code.
+To make changes, update the MATLAB code and republish this document.
+      --><title>buildPCA</title><meta name="generator" content="MATLAB 7.13"><link rel="schema.DC" href="http://purl.org/dc/elements/1.1/"><meta name="DC.date" content="2012-03-15"><meta name="DC.source" content="buildPCA.m"><style type="text/css">
+
+body {
+  background-color: white;
+  margin:10px;
+}
+
+h1 {
+  color: #990000; 
+  font-size: x-large;
+}
+
+h2 {
+  color: #990000;
+  font-size: medium;
+}
+
+/* Make the text shrink to fit narrow windows, but not stretch too far in 
+wide windows. */ 
+p,h1,h2,div.content div {
+  max-width: 600px;
+  /* Hack for IE6 */
+  width: auto !important; width: 600px;
+}
+
+pre.codeinput {
+  background: #EEEEEE;
+  padding: 10px;
+}
+@media print {
+  pre.codeinput {word-wrap:break-word; width:100%;}
+} 
+
+span.keyword {color: #0000FF}
+span.comment {color: #228B22}
+span.string {color: #A020F0}
+span.untermstring {color: #B20000}
+span.syscmd {color: #B28C00}
+
+pre.codeoutput {
+  color: #666666;
+  padding: 10px;
+}
+
+pre.error {
+  color: red;
+}
+
+p.footer {
+  text-align: right;
+  font-size: xx-small;
+  font-weight: lighter;
+  font-style: italic;
+  color: gray;
+}
+
+  </style></head><body><div class="content"><pre class="codeinput"><span class="keyword">function</span> [  ] = buildPCA( c )
+<span class="comment">%UNTITLED4 Summary of this function goes here</span>
+<span class="comment">%   Detailed explanation goes here</span>
+
+<span class="comment">% Config as per mitch.pca on 5/2/12.</span>
+<span class="comment">% doPCA_b1.m Version using shares, without debug code. Nico 8/2/12.</span>
+
+<span class="comment">% Initial set up.</span>
+disp(<span class="string">'Building PCA...'</span>);
+maxWorkers=100;
+nWarpOutArgs=2;
+
+allStartTime=tic;
+h=c.h;
+w=c.w;
+
+clusterRoot=c.replicatedClusterRoot;					<span class="comment">% The UNC path to the shared folder on the cluster head node.</span>
+localRoot=c.localRoot;								<span class="comment">% The mapped drive and path to the clusterRoot folder, as mounted on the client.</span>
+dirPCAModel=c.dirPCAModel;
+dirPCAModelREM=remPath(c,c.dirPCAModel);<span class="comment">% Results data output location.</span>
+dirSourceBitmaps=remPath(c,c.dirSourceBitmaps);			<span class="comment">% THIS IS A REMOTE PATH!! DO NOT USE FOR LOCAL ACCESS!</span>
+
+referenceFrames=c.referenceFrames;
+
+<span class="keyword">if</span> isfield(c,<span class="string">'frames'</span>)
+frames=c.frames;
+<span class="keyword">else</span>
+    frameList=dir([rightPath(c,c.dirSourceBitmaps) <span class="string">'*.bmp'</span>]);
+    frames=size(frameList,1);
+    c.frames=frames;
+<span class="keyword">end</span>
+PCs=c.PCs;
+
+
+
+<span class="comment">%Job setup</span>
+cd(localRoot);											<span class="comment">% Change into the working dir on the client.</span>
+sched=findResource();									<span class="comment">% sched=findResource('scheduler','configuration','jobmanagerconfig0');</span>
+job=createJob(sched);
+set(job,<span class="string">'MaximumNumberOfWorkers'</span>, maxWorkers);
+set(job,<span class="string">'MinimumNumberOfWorkers'</span>,1);
+<span class="comment">%REMEMBER THAT THIS IS BEING SET FROM THE REPLICATED CLUSTER ROOT - replicatedClusterRoot=C:\Export\JobData1\VisionLabLibrary\</span>
+paths={clusterRoot,[clusterRoot <span class="string">'Test2'</span>],[clusterRoot <span class="string">'Code\matlab-helpers'</span>],[clusterRoot <span class="string">'Code\sharePipe'</span>],<span class="keyword">...</span>
+  [clusterRoot <span class="string">'Code\mcgm'</span>]  };		<span class="comment">% UNC paths to any other folders needed by the workers to execute their tasks.</span>
+set(job,<span class="string">'PathDependencies'</span>,paths);
+
+<span class="comment">% As the client's mounted drive is a share from the head node of the cluster's replicated file system, any sub-folders and files only need to be created once on the client, to then be available to the task, on all the workers.</span>
+PCADir=[rightPath(c,c.dirPCAModel)];									<span class="comment">% Defines 'Test2\mitchPCAc\' for use on the workers.</span>
+<span class="keyword">if</span> ~isdir(PCADir);										<span class="comment">% Create the PCADir folder on the local mounted drive (called mitchPCAc) if it does not exist.</span>
+    mkdir(PCADir);
+<span class="keyword">end</span>
+warpDir=[PCADir <span class="string">'warp'</span>];								<span class="comment">% Defines 'Test1\mitchPCAc\warp';</span>
+<span class="keyword">if</span> ~isdir([PCADir <span class="string">'warp'</span>])    							<span class="comment">% Create the warp folder (called warp, below mitchPCA) if it does not exist.</span>
+    mkdir([PCADir <span class="string">'warp'</span>]);
+<span class="keyword">end</span>
+allDir=[PCADir <span class="string">'all'</span>]; 									<span class="comment">% Defines 'Test2\mitchPCAc\all';</span>
+<span class="keyword">if</span> ~isdir([PCADir <span class="string">'all'</span>])
+    mkdir([PCADir <span class="string">'all'</span>]);
+<span class="keyword">end</span>
+morphDir=[PCADir <span class="string">'morph'</span>];								<span class="comment">% Defines 'Test2\mitchPCAc\morph';</span>
+<span class="keyword">if</span> ~isdir([PCADir <span class="string">'morph'</span>])
+    mkdir([PCADir <span class="string">'morph'</span>]);
+<span class="keyword">end</span>
+
+<span class="comment">% Job 1 - (tasks_2) - Warp all the images.</span>
+<span class="comment">% if c.recursiveBitmapScan</span>
+<span class="comment">%     topDir=rightPath(c,c.dirSourceBitmaps);</span>
+<span class="comment">%    folders=dir(topDir);</span>
+<span class="comment">%    frameNames={};</span>
+<span class="comment">%    for i=1:size(folders,1)</span>
+<span class="comment">%        if folders(i).isdir</span>
+<span class="comment">%            frameNames=[frameNames;dir([topDir folders(i).name</span>
+
+
+frameNames=dir([rightPath(c,c.dirSourceBitmaps) <span class="string">'*.bmp'</span>]);
+<span class="comment">% Read the list of image names from the client's local mounted drive: 'Test2\mitch_ready\*.bmp');</span>
+refImage=[dirSourceBitmaps frameNames(referenceFrames).name];
+cprintf(<span class="string">'Red'</span>,<span class="string">'Reference image is number %d whose name is %s.\n'</span>, referenceFrames, refImage);
+dirFlowFields=[remPath(c,c.dirPCAModel) <span class="string">'warp\'</span>];
+fprintf(<span class="string">'Adding warp task for %i frames %d...'</span>,frames);
+<span class="keyword">for</span> i=1:frames
+    fprintf(<span class="string">'Adding warp task for frame %d...\n'</span>,i);	<span class="comment">% Debug.</span>
+    thisFramePath=[dirSourceBitmaps frameNames(i).name];	<span class="comment">% The path is relative to the cluster root folder.</span>
+    tasks_2{i}=createTask(job,@task_warp,nWarpOutArgs,{c,thisFramePath,refImage,dirFlowFields,i});
+<span class="keyword">end</span>
+tic;									<span class="comment">% Start a timer.</span>
+submit(job);
+fprintf(<span class="string">'\nJob 1 - Warp tasks submitted. Running...\n'</span>);
+waitForState(job);
+tasks_2{1}
+fprintf(<span class="string">'Job 1 ended with state %s after %6.4f seconds.\n'</span>,job.state,toc);
+alltasks=get(job,<span class="string">'Tasks'</span>);
+allresults=get(alltasks,<span class="string">'OutputArguments'</span>);
+<span class="comment">%celldisp(allresults);						% Debug. Display all the times and status values.</span>
+
+<span class="comment">% Check for errors.</span>
+errmsgs=get(job.Tasks,{<span class="string">'ErrorMessage'</span>});			<span class="comment">% Return the error results from each task as an array.</span>
+nonempty=~cellfun(@isempty,errmsgs);				<span class="comment">% Check whether error array is non-empty.</span>
+celldisp(errmsgs(nonempty));						<span class="comment">% Display any non-empty error messages of tasks in the job object.</span>
+
+<span class="comment">% Check for success.</span>
+success=true;
+<span class="keyword">for</span> i=1:frames
+    <span class="keyword">if</span> allresults{i}{1}~=1							<span class="comment">% ~cellfun(@(x) x(~=1),allresults{,1})</span>
+        success=false;
+    <span class="keyword">end</span>
+    times(i)=allresults{i}{2};
+<span class="keyword">end</span>
+<span class="keyword">if</span> ~success
+    statusMsg(<span class="string">'1'</span>,<span class="string">'NOT'</span>,<span class="string">'Warps'</span>);
+<span class="keyword">else</span>
+    statusMsg(<span class="string">'1'</span>,<span class="string">''</span>,<span class="string">'Warps'</span>);
+    fprintf(<span class="string">'Warps took min %6.4f, max %6.4f, mean %6.4f secs.\n'</span>,min(times),max(times),mean(times));
+
+    <span class="comment">%----------Job 2 - (tasks_3) - Calculate mean flow field.</span>
+    fprintf(<span class="string">'Job 2 - Adding get-mean-flow, tasks_3...\n'</span>);
+
+    <span class="comment">%Job setup</span>
+    sched=findResource();							<span class="comment">% sched=findResource('scheduler','configuration','jobmanagerconfig0');</span>
+    job=createJob(sched);
+    set(job,<span class="string">'MaximumNumberOfWorkers'</span>, maxWorkers);
+    set(job,<span class="string">'MinimumNumberOfWorkers'</span>,1);
+    cd(localRoot);						<span class="comment">% should already be in the working dir, from the last job. % Change into the working dir on the client.</span>
+    set(job,<span class="string">'PathDependencies'</span>,paths);			<span class="comment">% paths should already be defined.</span>
+
+    MeanFFieldFile=[remPath(c,c.dirPCAModel) <span class="string">'all\MeanWarp.mat'</span>];
+    thiswarpDir=[remPath(c,c.dirPCAModel) <span class="string">'warp'</span>];
+    thisallDir=[remPath(c,c.dirPCAModel) <span class="string">'all'</span>];
+    <span class="comment">% This task runs on just one worker, but needs all the files created by the previous task, before it can start.</span>
+    tasks_3{1}=createTask(job,@task_getMeanFlow,nWarpOutArgs,{MeanFFieldFile,c});
+    tic;									<span class="comment">% Start a timer.</span>
+    submit(job);
+    waitForState(job);
+    tasks_3{1}
+    fprintf(<span class="string">'Job 2 - Get-mean-flow job ended with state %s after %6.4f seconds.\n'</span>,job.state,toc);
+
+    alltasks=get(job,<span class="string">'Tasks'</span>);
+    allresults=get(alltasks,<span class="string">'OutputArguments'</span>);
+    <span class="comment">%celldisp(allresults);						% Debug.</span>
+    <span class="keyword">if</span>(~checkSuccess(tasks_3,allresults,2));
+        fprintf(<span class="string">'Job 2 had errors.\n'</span>);
+    <span class="keyword">else</span>
+        fprintf(<span class="string">'Job 2 completed OK.\n'</span>);			<span class="comment">% debug.</span>
+
+        <span class="comment">%---------Job 3 - (tasks_4) - Calculate morph vectors relative to the mean</span>
+        <span class="comment">%Job setup</span>
+        sched=findResource();						<span class="comment">% sched=findResource('scheduler','configuration','jobmanagerconfig0');</span>
+        job=createJob(sched);
+        set(job,<span class="string">'MaximumNumberOfWorkers'</span>, maxWorkers);
+        set(job,<span class="string">'MinimumNumberOfWorkers'</span>,1);
+        cd(localRoot);								<span class="comment">% Change into the working dir on the client.</span>
+        set(job,<span class="string">'PathDependencies'</span>,paths);
+        fprintf(<span class="string">'Job 3 - Adding mean-rel-morph-vector task for %d frames.'</span>,frames);
+        <span class="keyword">for</span> i=1:frames
+            fprintf(<span class="string">'Job 3 - Adding mean-rel-morph-vector task for frame %d...\n'</span>,i);	<span class="comment">% Debug.</span>
+            thisFramePath=[dirSourceBitmaps frameNames(i).name];
+            MeanFFieldFile=[remPath(c,c.dirPCAModel) <span class="string">'all\MeanWarp.mat'</span>];
+            thiswarpDir=[remPath(c,c.dirPCAModel) <span class="string">'warp\'</span>];
+            thismorphDir=[remPath(c,c.dirPCAModel) <span class="string">'morph\'</span>];
+            tasks_4{i}=createTask(job,@task_getMorph,nWarpOutArgs,{thisFramePath,MeanFFieldFile,i,frames,thiswarpDir,thismorphDir});
+        <span class="keyword">end</span>
+        tic;									<span class="comment">% Start a timer.</span>
+        submit(job);
+        waitForState(job);
+        tasks_4{1}
+        fprintf(<span class="string">'\nJob 3 - mean-rel-morph-vector job ended with state %s after %6.4f seconds.\n'</span>,job.state,toc);
+
+        <span class="comment">% Retrieve the output arguments.</span>
+        alltasks=get(job,<span class="string">'Tasks'</span>);
+        allresults=get(alltasks,<span class="string">'OutputArguments'</span>);
+        <span class="comment">%celldisp(allresults);				% Debug.</span>
+
+        <span class="comment">% Check for errors.</span>
+        errmsgs=get(job.Tasks,{<span class="string">'ErrorMessage'</span>});	<span class="comment">% Return the error results from each task as an array.</span>
+        nonempty=~cellfun(@isempty,errmsgs);		<span class="comment">% Check whether error array is non-empty.</span>
+        celldisp(errmsgs(nonempty));				<span class="comment">% Display any non-empty error messages of tasks in the job object.</span>
+
+        <span class="comment">% Check for success.</span>
+        success=true;
+        <span class="keyword">for</span> i=1:frames
+            <span class="keyword">if</span> allresults{i}{1}~=1					<span class="comment">% ~cellfun(@(x) x(~=1),allresults{,1})</span>
+                success=false;
+            <span class="keyword">end</span>
+            times(i)=allresults{i}{2};
+        <span class="keyword">end</span>
+        <span class="keyword">if</span> ~success
+            fprintf(<span class="string">'Job 3 - Morphs NOT all successful!\n'</span>);
+        <span class="keyword">else</span>
+            fprintf(<span class="string">'Job 3 - Morphs all successful in tasks_4.\n'</span>);
+            <span class="comment">%fprintf('Morphs take min %6.4f, max %6.4f, mean %6.4f secs.\n',min(times),max(times),mean(times));</span>
+
+            <span class="comment">%----------------Job 4 - (tasks_5) - Collect morph vectors and store them in a single variable</span>
+            fprintf(<span class="string">'Job 4 - Collecting morph vectors...\n'</span>);
+
+            <span class="comment">%Job setup</span>
+            sched=findResource();					<span class="comment">% sched=findResource('scheduler','configuration','jobmanagerconfig0');</span>
+            job=createJob(sched);
+            set(job,<span class="string">'MaximumNumberOfWorkers'</span>, maxWorkers);
+            set(job,<span class="string">'MinimumNumberOfWorkers'</span>,1);
+            cd(localRoot);							<span class="comment">% Change into the working dir on the client.</span>
+            set(job,<span class="string">'PathDependencies'</span>,paths);
+            thisallDir=[remPath(c,c.dirPCAModel) <span class="string">'all\'</span>];
+            thismorphDir=[remPath(c,c.dirPCAModel) <span class="string">'morph\'</span>];
+            tasks_5{1}=createTask(job,@task_collectMorphVectors,nWarpOutArgs,{c,thismorphDir,thisallDir});
+            tic;									<span class="comment">% Start a timer.</span>
+            submit(job);
+            waitForState(job);
+            tasks_5{1}
+            fprintf(<span class="string">'Job 4 - Collect-morph-vector job ended with state %s after %6.4f seconds.\n'</span>,job.state,toc);
+
+            <span class="comment">% Retrieve the output arguments.</span>
+            alltasks=get(job,<span class="string">'Tasks'</span>);
+            allresults=get(alltasks,<span class="string">'OutputArguments'</span>);
+            <span class="comment">%celldisp(allresults);					% Debug.</span>
+            <span class="keyword">if</span>(~checkSuccess(tasks_5,allresults,4));
+                fprintf(<span class="string">'Job 4 had errors.\n'</span>);
+            <span class="keyword">else</span>
+                fprintf(<span class="string">'Job 4 finished OK.\n'</span>);		<span class="comment">% Debug.</span>
+
+                <span class="comment">%-------------Job 5 - (tasks_6) - Train PCA model, calculate loadings and variance</span>
+                fprintf(<span class="string">'Job 5 - Performing PCA...\n'</span>);
+
+                <span class="comment">%Job setup</span>
+                sched=findResource();				<span class="comment">% sched=findResource('scheduler','configuration','jobmanagerconfig0');</span>
+                job=createJob(sched);
+                set(job,<span class="string">'MaximumNumberOfWorkers'</span>, maxWorkers);
+                set(job,<span class="string">'MinimumNumberOfWorkers'</span>,1);
+                cd(localRoot);						<span class="comment">% Change into the working dir on the client.</span>
+                set(job,<span class="string">'PathDependencies'</span>,paths);
+                thisallDir=[remPath(c,c.dirPCAModel) <span class="string">'all\'</span>];
+                tasks_6{1}=createTask(job,@task_PCA,nWarpOutArgs,{c});
+                tic;									<span class="comment">% Start a timer.</span>
+                submit(job);
+                waitForState(job);
+                tasks_6{1}
+                fprintf(<span class="string">'Job 5 - PCA job ended with state %s after %6.4f seconds.\n'</span>,job.state,toc);
+
+                <span class="comment">% Retrieve the output arguments.</span>
+                alltasks=get(job,<span class="string">'Tasks'</span>);
+                allresults=get(alltasks,<span class="string">'OutputArguments'</span>);
+                <span class="comment">%celldisp(allresults);					% Debug.</span>
+                <span class="keyword">if</span>(~checkSuccess(tasks_6,allresults,5));
+                    fprintf(<span class="string">'Job 5 had errors.\n'</span>);
+                <span class="keyword">else</span>
+                    fprintf(<span class="string">'Job 5 completed OK.\n'</span>);
+                    <span class="comment">%tt=etime(clock,allStartTime);</span>
+                    tt=toc(allStartTime);
+                    fprintf(<span class="string">'All the jobs have been run successfully.\n\nTotal time take was %10.6f secs.\n'</span>,tt);
+                <span class="keyword">end</span>									<span class="comment">% End of else block from tasks_6.</span>
+            <span class="keyword">end</span>										<span class="comment">% End of else block from tasks_5.</span>
+        <span class="keyword">end</span>											<span class="comment">% End of else block from tasks_4.</span>
+    <span class="keyword">end</span>												<span class="comment">% End of else block from tasks_3.</span>
+<span class="keyword">end</span>													<span class="comment">% End of else block from tasks_2.</span>
+<span class="comment">%destroy(job);</span>
+<span class="comment">%clear tasks_6;</span>
+<span class="comment">%clear job;</span>
+
+
+<span class="keyword">end</span>
+</pre><pre class="codeoutput">Building PCA...
+</pre><pre class="codeoutput">Error using buildPCA (line 14)
+Not enough input arguments.
+</pre><p class="footer"><br>
+      Published with MATLAB&reg; 7.13<br></p></div><!--
+##### SOURCE BEGIN #####
+function [  ] = buildPCA( c )
+%UNTITLED4 Summary of this function goes here
+%   Detailed explanation goes here
+
+% Config as per mitch.pca on 5/2/12.
+% doPCA_b1.m Version using shares, without debug code. Nico 8/2/12.
+
+% Initial set up.
+disp('Building PCA...');
+maxWorkers=100;
+nWarpOutArgs=2;
+
+allStartTime=tic;
+h=c.h;
+w=c.w;
+
+clusterRoot=c.replicatedClusterRoot;					% The UNC path to the shared folder on the cluster head node.
+localRoot=c.localRoot;								% The mapped drive and path to the clusterRoot folder, as mounted on the client.
+dirPCAModel=c.dirPCAModel;
+dirPCAModelREM=remPath(c,c.dirPCAModel);% Results data output location.
+dirSourceBitmaps=remPath(c,c.dirSourceBitmaps);			% THIS IS A REMOTE PATH!! DO NOT USE FOR LOCAL ACCESS!
+
+referenceFrames=c.referenceFrames;
+
+if isfield(c,'frames')
+frames=c.frames;
+else
+    frameList=dir([rightPath(c,c.dirSourceBitmaps) '*.bmp']);
+    frames=size(frameList,1);
+    c.frames=frames;
+end
+PCs=c.PCs;
+
+
+
+%Job setup
+cd(localRoot);											% Change into the working dir on the client.
+sched=findResource();									% sched=findResource('scheduler','configuration','jobmanagerconfig0');
+job=createJob(sched);
+set(job,'MaximumNumberOfWorkers', maxWorkers);
+set(job,'MinimumNumberOfWorkers',1);
+%REMEMBER THAT THIS IS BEING SET FROM THE REPLICATED CLUSTER ROOT - replicatedClusterRoot=C:\Export\JobData1\VisionLabLibrary\
+paths={clusterRoot,[clusterRoot 'Test2'],[clusterRoot 'Code\matlab-helpers'],[clusterRoot 'Code\sharePipe'],...
+  [clusterRoot 'Code\mcgm']  };		% UNC paths to any other folders needed by the workers to execute their tasks.
+set(job,'PathDependencies',paths);
+
+% As the client's mounted drive is a share from the head node of the cluster's replicated file system, any sub-folders and files only need to be created once on the client, to then be available to the task, on all the workers.
+PCADir=[rightPath(c,c.dirPCAModel)];									% Defines 'Test2\mitchPCAc\' for use on the workers.
+if ~isdir(PCADir);										% Create the PCADir folder on the local mounted drive (called mitchPCAc) if it does not exist.
+    mkdir(PCADir);
+end
+warpDir=[PCADir 'warp'];								% Defines 'Test1\mitchPCAc\warp';
+if ~isdir([PCADir 'warp'])    							% Create the warp folder (called warp, below mitchPCA) if it does not exist.
+    mkdir([PCADir 'warp']);
+end
+allDir=[PCADir 'all']; 									% Defines 'Test2\mitchPCAc\all';
+if ~isdir([PCADir 'all'])
+    mkdir([PCADir 'all']);
+end
+morphDir=[PCADir 'morph'];								% Defines 'Test2\mitchPCAc\morph';
+if ~isdir([PCADir 'morph'])
+    mkdir([PCADir 'morph']);
+end
+
+% Job 1 - (tasks_2) - Warp all the images.
+% if c.recursiveBitmapScan
+%     topDir=rightPath(c,c.dirSourceBitmaps);
+%    folders=dir(topDir);
+%    frameNames={};
+%    for i=1:size(folders,1)
+%        if folders(i).isdir
+%            frameNames=[frameNames;dir([topDir folders(i).name
+           
+
+frameNames=dir([rightPath(c,c.dirSourceBitmaps) '*.bmp']); 	
+% Read the list of image names from the client's local mounted drive: 'Test2\mitch_ready\*.bmp');
+refImage=[dirSourceBitmaps frameNames(referenceFrames).name];
+cprintf('Red','Reference image is number %d whose name is %s.\n', referenceFrames, refImage);
+dirFlowFields=[remPath(c,c.dirPCAModel) 'warp\'];
+fprintf('Adding warp task for %i frames %d...',frames);
+for i=1:frames
+    fprintf('Adding warp task for frame %d...\n',i);	% Debug.
+    thisFramePath=[dirSourceBitmaps frameNames(i).name];	% The path is relative to the cluster root folder.
+    tasks_2{i}=createTask(job,@task_warp,nWarpOutArgs,{c,thisFramePath,refImage,dirFlowFields,i});
+end
+tic;									% Start a timer.
+submit(job);
+fprintf('\nJob 1 - Warp tasks submitted. Running...\n');
+waitForState(job);
+tasks_2{1}
+fprintf('Job 1 ended with state %s after %6.4f seconds.\n',job.state,toc);
+alltasks=get(job,'Tasks');
+allresults=get(alltasks,'OutputArguments');
+%celldisp(allresults);						% Debug. Display all the times and status values.
+
+% Check for errors.
+errmsgs=get(job.Tasks,{'ErrorMessage'});			% Return the error results from each task as an array.
+nonempty=~cellfun(@isempty,errmsgs);				% Check whether error array is non-empty.
+celldisp(errmsgs(nonempty));						% Display any non-empty error messages of tasks in the job object.
+
+% Check for success.
+success=true;
+for i=1:frames
+    if allresults{i}{1}~=1							% ~cellfun(@(x) x(~=1),allresults{,1})
+        success=false;
+    end
+    times(i)=allresults{i}{2};
+end
+if ~success
+    statusMsg('1','NOT','Warps');
+else
+    statusMsg('1','','Warps');
+    fprintf('Warps took min %6.4f, max %6.4f, mean %6.4f secs.\n',min(times),max(times),mean(times));
+    
+    %REPLACE_WITH_DASH_DASHREPLACE_WITH_DASH_DASHREPLACE_WITH_DASH_DASHREPLACE_WITH_DASH_DASHREPLACE_WITH_DASH_DASHJob 2 - (tasks_3) - Calculate mean flow field.
+    fprintf('Job 2 - Adding get-mean-flow, tasks_3...\n');
+    
+    %Job setup
+    sched=findResource();							% sched=findResource('scheduler','configuration','jobmanagerconfig0');
+    job=createJob(sched);
+    set(job,'MaximumNumberOfWorkers', maxWorkers);
+    set(job,'MinimumNumberOfWorkers',1);
+    cd(localRoot);						% should already be in the working dir, from the last job. % Change into the working dir on the client.
+    set(job,'PathDependencies',paths);			% paths should already be defined.
+    
+    MeanFFieldFile=[remPath(c,c.dirPCAModel) 'all\MeanWarp.mat'];
+    thiswarpDir=[remPath(c,c.dirPCAModel) 'warp'];
+    thisallDir=[remPath(c,c.dirPCAModel) 'all'];
+    % This task runs on just one worker, but needs all the files created by the previous task, before it can start.
+    tasks_3{1}=createTask(job,@task_getMeanFlow,nWarpOutArgs,{MeanFFieldFile,c});
+    tic;									% Start a timer.
+    submit(job);
+    waitForState(job);
+    tasks_3{1}
+    fprintf('Job 2 - Get-mean-flow job ended with state %s after %6.4f seconds.\n',job.state,toc);
+    
+    alltasks=get(job,'Tasks');
+    allresults=get(alltasks,'OutputArguments');
+    %celldisp(allresults);						% Debug.
+    if(~checkSuccess(tasks_3,allresults,2));
+        fprintf('Job 2 had errors.\n');
+    else
+        fprintf('Job 2 completed OK.\n');			% debug.
+        
+        %REPLACE_WITH_DASH_DASHREPLACE_WITH_DASH_DASHREPLACE_WITH_DASH_DASHREPLACE_WITH_DASH_DASH-Job 3 - (tasks_4) - Calculate morph vectors relative to the mean
+        %Job setup
+        sched=findResource();						% sched=findResource('scheduler','configuration','jobmanagerconfig0');
+        job=createJob(sched);
+        set(job,'MaximumNumberOfWorkers', maxWorkers);
+        set(job,'MinimumNumberOfWorkers',1);
+        cd(localRoot);								% Change into the working dir on the client.
+        set(job,'PathDependencies',paths);
+        fprintf('Job 3 - Adding mean-rel-morph-vector task for %d frames.',frames);
+        for i=1:frames
+            fprintf('Job 3 - Adding mean-rel-morph-vector task for frame %d...\n',i);	% Debug.
+            thisFramePath=[dirSourceBitmaps frameNames(i).name];
+            MeanFFieldFile=[remPath(c,c.dirPCAModel) 'all\MeanWarp.mat'];
+            thiswarpDir=[remPath(c,c.dirPCAModel) 'warp\'];
+            thismorphDir=[remPath(c,c.dirPCAModel) 'morph\'];
+            tasks_4{i}=createTask(job,@task_getMorph,nWarpOutArgs,{thisFramePath,MeanFFieldFile,i,frames,thiswarpDir,thismorphDir});
+        end
+        tic;									% Start a timer.
+        submit(job);
+        waitForState(job);
+        tasks_4{1}
+        fprintf('\nJob 3 - mean-rel-morph-vector job ended with state %s after %6.4f seconds.\n',job.state,toc);
+        
+        % Retrieve the output arguments.
+        alltasks=get(job,'Tasks');
+        allresults=get(alltasks,'OutputArguments');
+        %celldisp(allresults);				% Debug.
+        
+        % Check for errors.
+        errmsgs=get(job.Tasks,{'ErrorMessage'});	% Return the error results from each task as an array.
+        nonempty=~cellfun(@isempty,errmsgs);		% Check whether error array is non-empty.
+        celldisp(errmsgs(nonempty));				% Display any non-empty error messages of tasks in the job object.
+        
+        % Check for success.
+        success=true;
+        for i=1:frames
+            if allresults{i}{1}~=1					% ~cellfun(@(x) x(~=1),allresults{,1})
+                success=false;
+            end
+            times(i)=allresults{i}{2};
+        end
+        if ~success
+            fprintf('Job 3 - Morphs NOT all successful!\n');
+        else
+            fprintf('Job 3 - Morphs all successful in tasks_4.\n');
+            %fprintf('Morphs take min %6.4f, max %6.4f, mean %6.4f secs.\n',min(times),max(times),mean(times));
+            
+            %REPLACE_WITH_DASH_DASHREPLACE_WITH_DASH_DASHREPLACE_WITH_DASH_DASHREPLACE_WITH_DASH_DASHREPLACE_WITH_DASH_DASHREPLACE_WITH_DASH_DASHREPLACE_WITH_DASH_DASHREPLACE_WITH_DASH_DASHJob 4 - (tasks_5) - Collect morph vectors and store them in a single variable
+            fprintf('Job 4 - Collecting morph vectors...\n');
+            
+            %Job setup
+            sched=findResource();					% sched=findResource('scheduler','configuration','jobmanagerconfig0');
+            job=createJob(sched);
+            set(job,'MaximumNumberOfWorkers', maxWorkers);
+            set(job,'MinimumNumberOfWorkers',1);
+            cd(localRoot);							% Change into the working dir on the client.
+            set(job,'PathDependencies',paths);
+            thisallDir=[remPath(c,c.dirPCAModel) 'all\'];
+            thismorphDir=[remPath(c,c.dirPCAModel) 'morph\'];
+            tasks_5{1}=createTask(job,@task_collectMorphVectors,nWarpOutArgs,{c,thismorphDir,thisallDir});
+            tic;									% Start a timer.
+            submit(job);
+            waitForState(job);
+            tasks_5{1}
+            fprintf('Job 4 - Collect-morph-vector job ended with state %s after %6.4f seconds.\n',job.state,toc);
+            
+            % Retrieve the output arguments.
+            alltasks=get(job,'Tasks');
+            allresults=get(alltasks,'OutputArguments');
+            %celldisp(allresults);					% Debug.
+            if(~checkSuccess(tasks_5,allresults,4));
+                fprintf('Job 4 had errors.\n');
+            else
+                fprintf('Job 4 finished OK.\n');		% Debug.
+                
+                %REPLACE_WITH_DASH_DASHREPLACE_WITH_DASH_DASHREPLACE_WITH_DASH_DASHREPLACE_WITH_DASH_DASHREPLACE_WITH_DASH_DASHREPLACE_WITH_DASH_DASH-Job 5 - (tasks_6) - Train PCA model, calculate loadings and variance
+                fprintf('Job 5 - Performing PCA...\n');
+                
+                %Job setup
+                sched=findResource();				% sched=findResource('scheduler','configuration','jobmanagerconfig0');
+                job=createJob(sched);
+                set(job,'MaximumNumberOfWorkers', maxWorkers);
+                set(job,'MinimumNumberOfWorkers',1);
+                cd(localRoot);						% Change into the working dir on the client.
+                set(job,'PathDependencies',paths);
+                thisallDir=[remPath(c,c.dirPCAModel) 'all\'];
+                tasks_6{1}=createTask(job,@task_PCA,nWarpOutArgs,{c});
+                tic;									% Start a timer.
+                submit(job);
+                waitForState(job);
+                tasks_6{1}
+                fprintf('Job 5 - PCA job ended with state %s after %6.4f seconds.\n',job.state,toc);
+                
+                % Retrieve the output arguments.
+                alltasks=get(job,'Tasks');
+                allresults=get(alltasks,'OutputArguments');
+                %celldisp(allresults);					% Debug.
+                if(~checkSuccess(tasks_6,allresults,5));
+                    fprintf('Job 5 had errors.\n');
+                else
+                    fprintf('Job 5 completed OK.\n');
+                    %tt=etime(clock,allStartTime);
+                    tt=toc(allStartTime);
+                    fprintf('All the jobs have been run successfully.\n\nTotal time take was %10.6f secs.\n',tt);
+                end									% End of else block from tasks_6.
+            end										% End of else block from tasks_5.
+        end											% End of else block from tasks_4.
+    end												% End of else block from tasks_3.
+end													% End of else block from tasks_2.
+%destroy(job);
+%clear tasks_6;
+%clear job;
+
+
+end
+
+
+##### SOURCE END #####
+--></body></html>
