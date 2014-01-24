@@ -48,9 +48,8 @@ function [ok,tFin] = task_getMorph(frameName,meanFFieldFile,n,nFrames,warpDir,mo
     TPy=Py;
     Texture=rec;
 
-    prec=ceil(log10(nFrames));
-    format=['%.' num2str(prec) 'i'];
-    save([morphDir '\morph' num2str(n,format) '.mat'],'TPx', 'TPy', 'Texture');
+
+    save([morphDir '\morph' num2str(n,'%03d') '.mat'],'TPx', 'TPy', 'Texture');
     ok=1;
     tFin=toc(tStart);
 end
