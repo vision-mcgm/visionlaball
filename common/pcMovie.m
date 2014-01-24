@@ -12,11 +12,11 @@
 % Default values when not running as a function
 
 %Params
-viewmatrix = reshape(1:15, 5, 3)'; % Shows first 15 PCs
-sds = 2; % Animates 2 SDs
+viewmatrix = reshape(1:5, 1, 5)'; % Shows first 15 PCs
+sds = 1; % Animates 2 SDs
 N = 50; % shows 25 frames
 
-scaling=0.5;
+scaling=1;
 
 %Work
 h = c.h;
@@ -91,11 +91,19 @@ for i=1:N,
             %              vec = MeanMorph + (k*sds*sqrt(variance(pc)/(length(variance)-1))*PCA(:, pc));
             
             
+            pcCoords=k*sds*sqrt(variance(pc));
+            if rows==1
+    fprintf('driver %d var %d coords %d\n',k*sds,sqrt(variance(pc)),pcCoords);
+            end
+            relVec=pcCoords*PCA(:,pc);
             % Simpler, but possibly wrong formula
-            vec = MeanMorph + (k*sds*sqrt(variance(pc))*PCA(:,pc));
+            vec = MeanMorph + relVec;
             %             [Px, Py, tex] = morphvec2data(vec, w, h);
             %             Px(Px<1)=1; Px(Px>w)=w; Py(Py<1)=1; Py(Py>h)=h;
+            dumpCoords{i}=pcCoords;
+            
             thisIm= morphvec2image(vec, w, h).*255;
+            dumpIms{i}=thisIm;
           %  imwrite(thisIm,['C:\Users\Alan Admin\Desktop\samples\' num2str(i)],'bmp');
             pic(((rows-1)*h)+1:rows*h, ((cols-1)*w)+1:cols*w, :) =thisIm;
         end
@@ -111,4 +119,5 @@ end
 
 fprintf('Making video...\n')
 movie2avi(M, [rootDir 'PCmovie_2_SDs.avi'], 'fps', 25, 'compression', 'none');
+save([rootDir 'PCmovie_2_SDs.avi'],'dumpCoords','dumpIms');
  end
